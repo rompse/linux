@@ -166,6 +166,70 @@ typedef struct _LDR_DATA_TABLE_ENTRY64
 	u64                   PatchInformation;
 } LDR_DATA_TABLE_ENTRY64, *PLDR_DATA_TABLE_ENTRY64;
 
+char* utf16toutf8_(char* Destination, const u16* Source, u32 DestinationMaxLength)
+{
+	u32 i;
+
+	for (i = 0; (i < DestinationMaxLength - 1) && (Source[i] != 0); i++)
+	{
+		Destination[i] = (char)Source[i];
+	}
+
+	Destination[i] = 0;
+
+	return Destination;
+}
+
+
+static bool is_in_range_of_module(struct kvm_vcpu* vcpu, const char* name, u64 rip, u64 kbase, u64 psloadedmodulelist)
+{
+	if (!vcpu || !kbase || !psloadedmodulelist) {
+		printk(KERN_ALERT "INVALID ARGS");
+	}
+	struct x86_exception e;
+
+	psloadedmodulelist += kbase;
+
+//	printk(KERN_ALERT "psloadedmodulelist: 0x%llx\n", psloadedmodulelist);
+
+	u64 current_module = psloadedmodulelist;
+	u64 count = 0;
+
+	kvm_read_guest(vcpu->kvm, kvm_mmu_gva_to_gpa_system(vcpu, current_module, &e), &current_module, sizeof(u64));
+	if (!current_module) {
+		printk(KERN_ALERT "CURRENT_MODULE INVALID");
+	}
+
+	while ((current_module != psloadedmodulelist) && (count++ < 4096))
+	{
+		LDR_DATA_TABLE_ENTRY64 mod_info = {0};
+		kvm_read_guest(vcpu->kvm, kvm_mmu_gva_to_gpa_system(vcpu, current_module, &e), &mod_info, sizeof(LDR_DATA_TABLE_ENTRY64));
+
+		if (mod_info.DllBase || mod_info.SizeOfImage) {
+			char arr[256] = { 0 };
+			u32 name_size = mod_info.DriverName.Length & 0xFFFF;
+			u16* name_buffer = kzalloc(name_size + 2ull, GFP_KERNEL_ACCOUNT);
+			kvm_read_guest(vcpu->kvm, kvm_mmu_gva_to_gpa_system(vcpu, mod_info.DriverName.Buffer, &e), name_buffer, name_size);
+			utf16toutf8_(arr, name_buffer, sizeof(arr));
+
+			u64 start = mod_info.DllBase;
+			u64 end = mod_info.DllBase + mod_info.SizeOfImage;
+			if (strcmp(arr, name) == 0 && rip >= start && rip <= end)
+				return true;
+
+//			printk(KERN_ALERT "DRIVER[%s] -> [ 0x%llx | 0x%x ]\n", arr, mod_info.DllBase, mod_info.SizeOfImage);
+		}
+
+		kvm_read_guest(vcpu->kvm, kvm_mmu_gva_to_gpa_system(vcpu, current_module, &e), &current_module, sizeof(u64));
+		if (!current_module) {
+			printk(KERN_ALERT "FAILED GETTING FLINK");
+			break;
+		}
+	}
+
+	return false;
+}
+
 static void dump_module_list_(struct kvm_vcpu* vcpu, u64 kbase, u64 psloadedmodulelist) {
 	if (!vcpu || !kbase || !psloadedmodulelist) {
 		printk(KERN_ALERT "INVALID ARGS");
@@ -190,18 +254,14 @@ static void dump_module_list_(struct kvm_vcpu* vcpu, u64 kbase, u64 psloadedmodu
 		kvm_read_guest(vcpu->kvm, kvm_mmu_gva_to_gpa_system(vcpu, current_module, &e), &mod_info, sizeof(LDR_DATA_TABLE_ENTRY64));
 
 		if (mod_info.DllBase || mod_info.SizeOfImage) {
-			printk(KERN_ALERT "DRIVER -> [ 0x%llx | 0x%x ]\n", mod_info.DllBase, mod_info.SizeOfImage);
+			char arr[256] = { 0 };
+			u32 name_size = mod_info.DriverName.Length & 0xFFFF;
+			u16* name_buffer = kzalloc(name_size + 2ull, GFP_KERNEL_ACCOUNT);
+			kvm_read_guest(vcpu->kvm, kvm_mmu_gva_to_gpa_system(vcpu, mod_info.DriverName.Buffer, &e), name_buffer, name_size);
+			utf16toutf8_(arr, name_buffer, sizeof(arr));
+
+			printk(KERN_ALERT "DRIVER[%s] -> [ 0x%llx | 0x%x ]\n", arr, mod_info.DllBase, mod_info.SizeOfImage);
 		}
-
-//				char arr[256] = { 0 };
-//				u32 name_size = mod_info.DriverName.Length & 0xFFFF;
-//				u16* name_buffer = kzalloc(name_size + 2ull, GFP_KERNEL_ACCOUNT);
-//				virt_read_kernel(vcpu, mod_info.DriverName.Buffer, name_size, name_buffer);
-
-//				utf16toutf8(arr, name_buffer, name_size / 2);
-//				arr[sizeof(arr) - 1] = '\0';
-
-//				printk(KERN_ALERT "DRIVER[%s] : 0x%llx -> 0x%x\n", arr, mod_info.DllBase, mod_info.SizeOfImage);
 
 		kvm_read_guest(vcpu->kvm, kvm_mmu_gva_to_gpa_system(vcpu, current_module, &e), &current_module, sizeof(u64));
 		if (!current_module) {
@@ -211,12 +271,68 @@ static void dump_module_list_(struct kvm_vcpu* vcpu, u64 kbase, u64 psloadedmodu
 	}
 }
 
+void disasm_be(struct kvm_vcpu *vcpu, u64 psloadedmodulelist) {
+	static u64 kbase = 0;
+	if (!kbase) {
+		kbase=get_kernel_base_(vcpu, get_kernel_entry(vcpu));
+	}
+
+	struct kvm_host_map map;
+	u64 rip = kvm_rip_read(vcpu);
+	rip -= 0x20;
+	bool in_range = is_in_range_of_module(vcpu, "BEDaisy.sys", rip, kbase, psloadedmodulelist);
+	if (!in_range)
+		return;
+
+	printk(KERN_ALERT "CPUID CALLED FROM BEDAISY\n");
+
+	gpa_t gpa = kvm_mmu_gva_to_gpa_read(vcpu, rip, NULL);
+	if (kvm_vcpu_map(vcpu, gpa_to_gfn(gpa), &map)) {
+		printk(KERN_ALERT "vcpu map fail...\n");
+		return;
+	}
+
+	if (!map.hva) {
+		printk(KERN_ALERT "mapped page invalid hva...\n");
+		return;
+	}
+
+	u8* hva = map.hva + offset_in_page(gpa);
+
+	ZydisDecoder decoder;
+	ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64);
+	ZydisFormatter formatter;
+	ZydisFormatterInit(&formatter, ZYDIS_FORMATTER_STYLE_INTEL);
+	ZyanU64 runtime_address = rip;
+	ZyanUSize offset = 0;
+	const ZyanUSize length = 0x40;
+	ZydisDecodedInstruction instruction;
+	ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT_VISIBLE];
+	while (ZYAN_SUCCESS(ZydisDecoderDecodeFull(&decoder, hva + offset, length - offset,
+						   &instruction, operands, ZYDIS_MAX_OPERAND_COUNT_VISIBLE,
+						   ZYDIS_DFLAG_VISIBLE_OPERANDS_ONLY)))
+	{
+		char buffer[256];
+		ZydisFormatterFormatInstruction(&formatter, &instruction, operands,
+						instruction.operand_count_visible, buffer, sizeof(buffer), runtime_address);
+		printk(KERN_ALERT "0x%llx %s", runtime_address, buffer);
+
+		offset += instruction.length;
+		runtime_address += instruction.length;
+	}
+
+	kvm_vcpu_unmap(vcpu, &map, true);
+}
 
 void introspection_cpuid_callback(struct kvm_vcpu *vcpu) {
 	u32 eax = kvm_rax_read(vcpu);
 	u32 ebx = kvm_rbx_read(vcpu);
 	u32 ecx = kvm_rcx_read(vcpu);
 	u32 edx = kvm_rdx_read(vcpu);
+
+	static u64 psloadedmodulelist = 0;
+	if (psloadedmodulelist)
+		disasm_be(vcpu, psloadedmodulelist);
 
 	switch (eax) {
 	case INTROSPECTION_CPUID_INIT: {
@@ -267,6 +383,7 @@ void introspection_cpuid_callback(struct kvm_vcpu *vcpu) {
 		u64 packed = ((u64)ecx) << 32 | edx;
 		printk(KERN_ALERT "[kbase] 0x%llx\n", kbase);
 		printk(KERN_ALERT "[psloadedmodulelist] 0x%llx\n", packed);
+		psloadedmodulelist = packed;
 		dump_module_list_(vcpu, kbase, packed);
 		break;
 	}
