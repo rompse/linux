@@ -6699,6 +6699,7 @@ EXPORT_SYMBOL_GPL(kvm_mmu_gva_to_gpa_read);
 	access |= PFERR_FETCH_MASK;
 	return mmu->gva_to_gpa(vcpu, mmu, gva, access, exception);
 }
+EXPORT_SYMBOL_GPL(kvm_mmu_gva_to_gpa_fetch);
 
 gpa_t kvm_mmu_gva_to_gpa_write(struct kvm_vcpu *vcpu, gva_t gva,
 			       struct x86_exception *exception)
@@ -6719,6 +6720,7 @@ gpa_t kvm_mmu_gva_to_gpa_system(struct kvm_vcpu *vcpu, gva_t gva,
 
 	return mmu->gva_to_gpa(vcpu, mmu, gva, 0, exception);
 }
+EXPORT_SYMBOL_GPL(kvm_mmu_gva_to_gpa_system);
 
 static int kvm_read_guest_virt_helper(gva_t addr, void *val, unsigned int bytes,
 				      struct kvm_vcpu *vcpu, u32 access,
