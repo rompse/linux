@@ -2715,12 +2715,18 @@ int kvm_vcpu_map(struct kvm_vcpu *vcpu, gfn_t gfn, struct kvm_host_map *map)
 	void *hva = NULL;
 	struct page *page = KVM_UNMAPPED_PAGE;
 
-	if (!map)
+	printk(KERN_ALERT "DOING MAP!\n");
+
+	if (!map) {
+		printk(KERN_ALERT "[kvm_vcpu_map] !map\n");
 		return -EINVAL;
+	}
 
 	pfn = gfn_to_pfn(vcpu->kvm, gfn);
-	if (is_error_noslot_pfn(pfn))
+	if (is_error_noslot_pfn(pfn)) {
+		printk(KERN_ALERT "[kvm_vcpu_map] is_error_noslot_pfn(pfn)\n");
 		return -EINVAL;
+	}
 
 	if (pfn_valid(pfn)) {
 		page = pfn_to_page(pfn);
@@ -2731,8 +2737,10 @@ int kvm_vcpu_map(struct kvm_vcpu *vcpu, gfn_t gfn, struct kvm_host_map *map)
 #endif
 	}
 
-	if (!hva)
+	if (!hva) {
+		printk(KERN_ALERT "[kvm_vcpu_map] !hva\n");
 		return -EFAULT;
+	}
 
 	map->page = page;
 	map->hva = hva;
