@@ -5711,7 +5711,6 @@ static int handle_bus_lock_vmexit(struct kvm_vcpu *vcpu)
 #define INT_PAGE_OFFSET_SIZE 12
 #define INT_PMASK ((~0xfull << 8) & 0xfffffffffull)
 
-
 #define IMAGE_NUMBEROF_DIRECTORY_ENTRIES    16
 
 typedef struct _IMAGE_DOS_HEADER
