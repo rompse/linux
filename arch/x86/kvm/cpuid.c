@@ -1027,12 +1027,14 @@ static inline int __do_cpuid_func(struct kvm_cpuid_array *array, u32 function)
 		}
 		break;
 	case KVM_CPUID_SIGNATURE: {
-		const u32 *sigptr = (const u32 *)KVM_SIGNATURE;
-		entry->eax = KVM_CPUID_FEATURES;
-		entry->ebx = sigptr[0];
-		entry->ecx = sigptr[1];
-		entry->edx = sigptr[2];
 		break;
+
+//		const u32 *sigptr = (const u32 *)KVM_SIGNATURE;
+//		entry->eax = KVM_CPUID_FEATURES;
+//		entry->ebx = sigptr[0];
+//		entry->ecx = sigptr[1];
+//		entry->edx = sigptr[2];
+//		break;
 	}
 	case KVM_CPUID_FEATURES:
 		entry->eax = (1 << KVM_FEATURE_CLOCKSOURCE) |

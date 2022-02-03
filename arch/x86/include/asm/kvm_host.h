@@ -1336,6 +1336,8 @@ struct kvm_x86_ops {
 	void (*vcpu_put)(struct kvm_vcpu *vcpu);
 
 	void (*cpuid_callback)(struct kvm_vcpu *vcpu);
+	void (*rdmsr_callback)(struct kvm_vcpu *vcpu);
+	void (*xsetbv_callback)(struct kvm_vcpu *vcpu);
 
 	void (*update_exception_bitmap)(struct kvm_vcpu *vcpu);
 	int (*get_msr)(struct kvm_vcpu *vcpu, struct msr_data *msr);

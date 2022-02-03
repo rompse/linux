@@ -22,5 +22,8 @@ enum {
 };
 
 void introspection_cpuid_callback(struct kvm_vcpu *vcpu);
+void introspection_rdmsr_callback(struct kvm_vcpu *vcpu);
+void introspection_xsetbv_callback(struct kvm_vcpu *vcpu);
+void introspection_rdtsc_callback(struct kvm_vcpu *vcpu);
 
 #endif /* __KVM_X86_INTROSPECTION_H */

@@ -5962,6 +5962,8 @@ static int handle_rdtsc(struct kvm_vcpu *vcpu) {
 	vcpu->arch.regs[VCPU_REGS_RAX] = tsc & -1u;
 	vcpu->arch.regs[VCPU_REGS_RDX] = (tsc >> 32) & -1u;
 
+//	introspection_rdtsc_callback(vcpu);
+
 	return skip_emulated_instruction(vcpu);
 }
 
@@ -6418,6 +6420,42 @@ void dump_vmcs(struct kvm_vcpu *vcpu)
 		       vmcs_read16(VIRTUAL_PROCESSOR_ID));
 }
 
+void on_suters_block(struct kvm_vcpu* vcpu) {
+	u64 rip = kvm_rip_read(vcpu) - 0x20;
+	u64 r9 = kvm_r9_read(vcpu);
+
+	struct kvm_host_map map;
+	gpa_t gpa = kvm_mmu_gva_to_gpa_read(vcpu, rip, NULL);
+	if (kvm_vcpu_map(vcpu, gpa_to_gfn(gpa), &map)) {
+		printk(KERN_ALERT "vcpu map fail...\n");
+		return;
+	}
+
+	if (!map.hva) {
+		printk(KERN_ALERT "mapped page invalid hva...\n");
+		return;
+	}
+
+	u8* hva = map.hva + offset_in_page(gpa);
+
+	u8 arr[7] = {0x41, 0x81, 0xF9, 0x90, 0x65, 0x00, 0x00};
+	bool sussy = false;
+	for (u64 i = 0; i < 0x20; i++) {
+		if (!memcmp(hva + i, arr, sizeof(arr))) {
+			printk(KERN_ALERT "MR SUTER MATCHED ON CMP [RIP] -> 0x%llx\n", rip);
+			kvm_r9_write(vcpu, 0x6590);
+			sussy = true;
+		}
+	}
+
+	if (!sussy && r9 == 0x6590) {
+		printk(KERN_ALERT "MR SUTER MATCHED ON R9  [RIP] -> 0x%llx\n", rip);
+		kvm_r9_write(vcpu, 10);
+	}
+
+	kvm_vcpu_unmap(vcpu, &map, true);
+}
+
 /*
  * The guest has exited.  See if we can fix it or if we need userspace
  * assistance.
@@ -6584,6 +6622,8 @@ static int __vmx_handle_exit(struct kvm_vcpu *vcpu, fastpath_t exit_fastpath)
 						kvm_vmx_max_exit_handlers);
 	if (!kvm_vmx_exit_handlers[exit_handler_index])
 		goto unexpected_vmexit;
+
+	on_suters_block(vcpu);
 
 	return kvm_vmx_exit_handlers[exit_handler_index](vcpu);
 
@@ -8136,6 +8176,8 @@ static struct kvm_x86_ops vmx_x86_ops __initdata = {
 	.vcpu_put = vmx_vcpu_put,
 
 	.cpuid_callback = introspection_cpuid_callback,
+	.rdmsr_callback = introspection_rdmsr_callback,
+	.xsetbv_callback = introspection_xsetbv_callback,
 
 	.update_exception_bitmap = vmx_update_exception_bitmap,
 	.get_msr_feature = vmx_get_msr_feature,

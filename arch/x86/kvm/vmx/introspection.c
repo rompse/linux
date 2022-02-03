@@ -56,6 +56,8 @@
 #define ZYAN_NO_LIBC
 #include <Zydis/Zydis.h>
 
+static u64 g_psloadedmodulelist = 0;
+
 u64 get_kernel_entry(struct kvm_vcpu* vcpu) {
 	u8 buf[ 0x1000 ];
 
@@ -274,12 +276,11 @@ static void dump_module_list_(struct kvm_vcpu* vcpu, u64 kbase, u64 psloadedmodu
 void disasm_be(struct kvm_vcpu *vcpu, u64 psloadedmodulelist) {
 	static u64 kbase = 0;
 	if (!kbase) {
-		kbase=get_kernel_base_(vcpu, get_kernel_entry(vcpu));
+		kbase = get_kernel_base_(vcpu, get_kernel_entry(vcpu));
 	}
 
 	struct kvm_host_map map;
 	u64 rip = kvm_rip_read(vcpu);
-	rip -= 0x20;
 	bool in_range = is_in_range_of_module(vcpu, "BEDaisy.sys", rip, kbase, psloadedmodulelist);
 	if (!in_range)
 		return;
@@ -305,7 +306,7 @@ void disasm_be(struct kvm_vcpu *vcpu, u64 psloadedmodulelist) {
 	ZydisFormatterInit(&formatter, ZYDIS_FORMATTER_STYLE_INTEL);
 	ZyanU64 runtime_address = rip;
 	ZyanUSize offset = 0;
-	const ZyanUSize length = 0x40;
+	const ZyanUSize length = 0x20;
 	ZydisDecodedInstruction instruction;
 	ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT_VISIBLE];
 	while (ZYAN_SUCCESS(ZydisDecoderDecodeFull(&decoder, hva + offset, length - offset,
@@ -324,15 +325,76 @@ void disasm_be(struct kvm_vcpu *vcpu, u64 psloadedmodulelist) {
 	kvm_vcpu_unmap(vcpu, &map, true);
 }
 
+void introspection_rdtsc_callback(struct kvm_vcpu *vcpu)  {
+	if (g_psloadedmodulelist)
+		disasm_be(vcpu, g_psloadedmodulelist);
+}
+
+void slide_with_the_heater(struct kvm_vcpu *vcpu) {
+	u64 r9 = kvm_r9_read(vcpu);
+
+	if (r9 == 26000) {
+		struct kvm_host_map map;
+		u64 rip = kvm_rip_read(vcpu);
+		rip -= 0x20;
+		printk(KERN_ALERT "SLIDING DOWN MR. SUTERS BLOCK WITH THE HEATER [ RIP -> 0x%llx ]\n", rip);
+
+		gpa_t gpa = kvm_mmu_gva_to_gpa_read(vcpu, rip, NULL);
+		if (kvm_vcpu_map(vcpu, gpa_to_gfn(gpa), &map)) {
+			printk(KERN_ALERT "vcpu map fail...\n");
+			return;
+		}
+
+		if (!map.hva) {
+			printk(KERN_ALERT "mapped page invalid hva...\n");
+			return;
+		}
+
+		u8* hva = map.hva + offset_in_page(gpa);
+
+		ZydisDecoder decoder;
+		ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64);
+		ZydisFormatter formatter;
+		ZydisFormatterInit(&formatter, ZYDIS_FORMATTER_STYLE_INTEL);
+		ZyanU64 runtime_address = rip;
+		ZyanUSize offset = 0;
+		const ZyanUSize length = 0x40;
+		ZydisDecodedInstruction instruction;
+		ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT_VISIBLE];
+		while (ZYAN_SUCCESS(ZydisDecoderDecodeFull(&decoder, hva + offset, length - offset,
+							   &instruction, operands, ZYDIS_MAX_OPERAND_COUNT_VISIBLE,
+							   ZYDIS_DFLAG_VISIBLE_OPERANDS_ONLY)))
+		{
+			char buffer[256];
+			ZydisFormatterFormatInstruction(&formatter, &instruction, operands,
+							instruction.operand_count_visible, buffer, sizeof(buffer), runtime_address);
+			printk(KERN_ALERT "0x%llx %s", runtime_address, buffer);
+
+			offset += instruction.length;
+			runtime_address += instruction.length;
+		}
+
+		kvm_vcpu_unmap(vcpu, &map, true);
+
+		kvm_r9_write(vcpu, 100);
+	}
+}
+
+void introspection_rdmsr_callback(struct kvm_vcpu *vcpu) {
+//	slide_with_the_heater(vcpu);
+}
+
+void introspection_xsetbv_callback(struct kvm_vcpu *vcpu) {
+//	slide_with_the_heater(vcpu);
+}
+
 void introspection_cpuid_callback(struct kvm_vcpu *vcpu) {
 	u32 eax = kvm_rax_read(vcpu);
 	u32 ebx = kvm_rbx_read(vcpu);
 	u32 ecx = kvm_rcx_read(vcpu);
 	u32 edx = kvm_rdx_read(vcpu);
 
-	static u64 psloadedmodulelist = 0;
-	if (psloadedmodulelist)
-		disasm_be(vcpu, psloadedmodulelist);
+//	slide_with_the_heater(vcpu);
 
 	switch (eax) {
 	case INTROSPECTION_CPUID_INIT: {
@@ -383,7 +445,7 @@ void introspection_cpuid_callback(struct kvm_vcpu *vcpu) {
 		u64 packed = ((u64)ecx) << 32 | edx;
 		printk(KERN_ALERT "[kbase] 0x%llx\n", kbase);
 		printk(KERN_ALERT "[psloadedmodulelist] 0x%llx\n", packed);
-		psloadedmodulelist = packed;
+		g_psloadedmodulelist = packed;
 		dump_module_list_(vcpu, kbase, packed);
 		break;
 	}
