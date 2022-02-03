@@ -13,17 +13,15 @@
 #include "vmx_ops.h"
 #include "cpuid.h"
 
-// private: -> intro
-// public: -> introspection
-
 enum {
 	INTROSPECTION_CPUID_INIT = 0x69420,
-	INTROSPECTION_CPUID_DUMP_MODULES = 0x69421
+	INTROSPECTION_CPUID_DUMP_MODULES = 0x69421,
 };
 
 void introspection_cpuid_callback(struct kvm_vcpu *vcpu);
 void introspection_rdmsr_callback(struct kvm_vcpu *vcpu);
 void introspection_xsetbv_callback(struct kvm_vcpu *vcpu);
 void introspection_rdtsc_callback(struct kvm_vcpu *vcpu);
+void introspection_vmexit_callback(struct kvm_vcpu* vcpu);
 
 #endif /* __KVM_X86_INTROSPECTION_H */
