@@ -8,7 +8,8 @@
  * should be used to determine that a VM is running under KVM.
  */
 #define KVM_CPUID_SIGNATURE	0x40000000
-#define KVM_SIGNATURE "KVMKVMKVM\0\0\0"
+//#define KVM_SIGNATURE "KVMKVMKVM\0\0\0"
+#define KVM_SIGNATURE "GenuineIntel"
 
 /* This CPUID returns two feature bitmaps in eax, edx. Before enabling
  * a particular paravirtualization, the appropriate feature bit should

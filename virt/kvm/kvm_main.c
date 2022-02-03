@@ -2715,8 +2715,6 @@ int kvm_vcpu_map(struct kvm_vcpu *vcpu, gfn_t gfn, struct kvm_host_map *map)
 	void *hva = NULL;
 	struct page *page = KVM_UNMAPPED_PAGE;
 
-	printk(KERN_ALERT "DOING MAP!\n");
-
 	if (!map) {
 		printk(KERN_ALERT "[kvm_vcpu_map] !map\n");
 		return -EINVAL;
