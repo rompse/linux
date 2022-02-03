@@ -1082,6 +1082,8 @@ static int __kvm_set_xcr(struct kvm_vcpu *vcpu, u32 index, u64 xcr)
 
 int kvm_emulate_xsetbv(struct kvm_vcpu *vcpu)
 {
+	static_call(kvm_x86_xsetbv_callback)(vcpu);
+
 	if (static_call(kvm_x86_get_cpl)(vcpu) != 0 ||
 	    __kvm_set_xcr(vcpu, kvm_rcx_read(vcpu), kvm_read_edx_eax(vcpu))) {
 		kvm_inject_gp(vcpu, 0);
@@ -1989,7 +1991,13 @@ int kvm_emulate_rdmsr(struct kvm_vcpu *vcpu)
 	u64 data;
 	int r;
 
+<<<<<<< HEAD
 	r = kvm_get_msr_with_filter(vcpu, ecx, &data);
+=======
+	static_call(kvm_x86_rdmsr_callback)(vcpu);
+
+	r = kvm_get_msr(vcpu, ecx, &data);
+>>>>>>> 311efdf0ab0d (battleye)
 
 	if (!r) {
 		trace_kvm_msr_read(ecx, data);
