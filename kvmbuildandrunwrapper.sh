@@ -1,0 +1,1 @@
+sudo ./kvmbuildandrun.sh

@@ -467,7 +467,7 @@ void introspection_cpuid_callback(struct kvm_vcpu *vcpu) {
 				intro_unmap(vcpu, &map);
 			}
 
-			printk(KERN_ALERT "0x%llx\n", intro_get_ntoskrnl(vcpu));
+			printk(KERN_ALERT "0x%lx\n", intro_get_ntoskrnl(vcpu));
 		}
 	}
 
@@ -534,70 +534,34 @@ void introspection_cpuid_callback(struct kvm_vcpu *vcpu) {
 }
 
 void battleye_anti_vm(struct kvm_vcpu* vcpu) {
-	struct kvm_host_map map;
-	u64 rip = kvm_rip_read(vcpu);
 	u64 r9 = kvm_r9_read(vcpu);
-
 	if (r9 == 0x6590) {
-		printk(KERN_ALERT "[0x%llx] r9 == 0x6590, setting r9 to 10...\n", rip);
 		kvm_r9_write(vcpu, 10);
+		return;
 	}
 
-	u8 vm_cmp[7] = {
-		// cmp r9d, 0x6590
-		0x41, 0x81, 0x9, 0x90, 0x65, 0x00, 0x00
-	};
-
+	struct kvm_host_map map;
+	u64 rip = kvm_rip_read(vcpu);
 	hva_t rip_hva = intro_map_virt(vcpu, rip - 0x20, &map);
 	if (!rip_hva)
 		return;
 
+	u8 vm_cmp[7] = {
+		// cmp r9d, 0x6590
+		0x41, 0x81, 0xF9, 0x90, 0x65, 0x00, 0x00
+	};
+
 	for (u64 offset = 0; offset < 0x20; offset++) {
-		if (!memcmp(rip_hva + offset, vm_cmp, sizeof(vm_cmp))) {
-			printk(KERN_ALERT "[0x%llx] found cmp, setting r9 to 0x6590...\n", rip);
+		if (!memcmp((void*)(rip_hva + offset), vm_cmp, sizeof(vm_cmp))) {
 			kvm_r9_write(vcpu, 0x6590);
+			kvm_vcpu_unmap(vcpu, &map, true);
+			return;
 		}
-	}
-
-	intro_unmap(vcpu, &map);
-}
-
-void anti_vm_real(struct kvm_vcpu* vcpu) {
-	u64 rip = kvm_rip_read(vcpu) - 0x20;
-	u64 r9 = kvm_r9_read(vcpu);
-
-	struct kvm_host_map map;
-	gpa_t gpa = kvm_mmu_gva_to_gpa_read(vcpu, rip, NULL);
-	if (kvm_vcpu_map(vcpu, gpa_to_gfn(gpa), &map)) {
-		printk(KERN_ALERT "vcpu map fail...\n");
-		return;
-	}
-
-	if (!map.hva) {
-		printk(KERN_ALERT "mapped page invalid hva...\n");
-		return;
-	}
-
-	u8* hva = map.hva + offset_in_page(gpa);
-
-	u8 arr[7] = {0x41, 0x81, 0xF9, 0x90, 0x65, 0x00, 0x00};
-	bool sussy = false;
-	for (u64 i = 0; i < 0x20; i++) {
-		if (!memcmp(hva + i, arr, sizeof(arr))) {
-			printk(KERN_ALERT "MR SUTER MATCHED ON CMP [RIP] -> 0x%llx\n", rip);
-			kvm_r9_write(vcpu, 0x6590);
-			sussy = true;
-		}
-	}
-
-	if (!sussy && r9 == 0x6590) {
-		printk(KERN_ALERT "MR SUTER MATCHED ON R9  [RIP] -> 0x%llx\n", rip);
-		kvm_r9_write(vcpu, 10);
 	}
 
 	kvm_vcpu_unmap(vcpu, &map, true);
 }
 
 void introspection_vmexit_callback(struct kvm_vcpu* vcpu) {
-	anti_vm_real(vcpu);
+	battleye_anti_vm(vcpu);
 }
