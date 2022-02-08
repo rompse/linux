@@ -2,12 +2,12 @@
 #define __KVM_X86_INTROSPECTION_WINTYPES_H
 
 typedef void VOID;
-typedef long LONG;
-typedef unsigned long ULONG;
-typedef unsigned char UCHAR;
-typedef unsigned short USHORT;
-typedef long long LONGLONG;
-typedef unsigned long long ULONGLONG;
+typedef int32_t LONG;
+typedef uint32_t ULONG;
+typedef uint8_t UCHAR;
+typedef uint16_t USHORT;
+typedef int64_t LONGLONG;
+typedef uint64_t ULONGLONG;
 typedef uint16_t WCHAR;
 
 struct _UNICODE_STRING
@@ -90,8 +90,8 @@ struct _LDR_DATA_TABLE_ENTRY
 	struct _LIST_ENTRY InLoadOrderLinks;                                    //0x0
 	struct _LIST_ENTRY InMemoryOrderLinks;                                  //0x10
 	struct _LIST_ENTRY InInitializationOrderLinks;                          //0x20
-	VOID* DllBase;                                                          //0x30
-	VOID* EntryPoint;                                                       //0x38
+	ULONGLONG DllBase;                                                      //0x30
+	ULONGLONG EntryPoint;                                                   //0x38
 	ULONG SizeOfImage;                                                      //0x40
 	struct _UNICODE_STRING FullDllName;                                     //0x48
 	struct _UNICODE_STRING BaseDllName;                                     //0x58
@@ -196,6 +196,22 @@ struct _IMAGE_DATA_DIRECTORY
 {
 	ULONG VirtualAddress;                                                   //0x0
 	ULONG Size;                                                             //0x4
+};
+
+#define IMAGE_DIRECTORY_ENTRY_EXPORT          0   // Export Directory
+#define IMAGE_DIRECTORY_ENTRY_IMPORT          1   // Import Directory
+struct _IMAGE_EXPORT_DIRECTORY {
+	ULONG   Characteristics;
+	ULONG   TimeDateStamp;
+	USHORT  MajorVersion;
+	USHORT  MinorVersion;
+	ULONG   Name;
+	ULONG   Base;
+	ULONG   NumberOfFunctions;
+	ULONG   NumberOfNames;
+	ULONG   AddressOfFunctions;
+	ULONG   AddressOfNames;
+	ULONG   AddressOfNameOrdinals;
 };
 
 struct _IMAGE_OPTIONAL_HEADER64

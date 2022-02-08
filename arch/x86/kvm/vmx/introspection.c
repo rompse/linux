@@ -83,8 +83,15 @@ struct windows_context {
 	u64 PsLoadedModuleList;
 };
 
-struct windows_pe {
+struct pe_export {
+	char name[256];
+	gva_t address;
+	gva_t address_rva;
+};
 
+struct pe_header {
+	struct xarray exports;
+	u32 export_count;
 };
 
 typedef void(*disassemble_callback_t)(ZydisDecodedInstruction*, u64);
@@ -150,6 +157,18 @@ void intro_write_phys(struct kvm_vcpu* vcpu, gpa_t addr, void* buffer, u32 len) 
 	kvm_write_guest(vcpu->kvm, addr, buffer, len);
 }
 
+void intro_read_wstr(struct kvm_vcpu* vcpu, struct _UNICODE_STRING* ustr, char* buffer, u32 len) {
+	u32 name_size = ustr->Length;
+	u16* name_buffer = kzalloc(name_size + 2, GFP_KERNEL_ACCOUNT);
+	intro_read_virt(vcpu, (gva_t)ustr->Buffer, name_buffer, name_size);
+
+	u32 i;
+	for (i = 0; (i < len - 1) && (name_buffer[i] != 0); i++)
+		buffer[i] = (char)name_buffer[i];
+
+	buffer[i] = 0;
+}
+
 hva_t intro_map_virt(struct kvm_vcpu *vcpu, gva_t addr, struct kvm_host_map* map) {
 	gpa_t gpa = kvm_mmu_gva_to_gpa_read(vcpu, addr, NULL);
 	if (kvm_vcpu_map(vcpu, gpa_to_gfn(gpa), map))
@@ -170,8 +189,66 @@ DEFINE_MEMORY_OPERATION(32, u32);
 DEFINE_MEMORY_OPERATION(16, u16);
 DEFINE_MEMORY_OPERATION(8, u8);
 
+#define intro_pe_for_each_export(idx, export, pe) \
+	xa_for_each_range(&pe->exports, idx, export, 0, \
+			  (pe->export_count - 1))
+
+#define intro_pe_for_each_export_ref(idx, export, pe) \
+	xa_for_each_range(&pe.exports, idx, export, 0, \
+			  (pe.export_count - 1))
+
+
 bool intro_init_win_context(struct windows_context* ctx);
-bool intro_init_pe(struct windows_pe* pe, gva_t address);
+
+bool intro_init_pe(struct kvm_vcpu* vcpu, gva_t address, struct pe_header* pe) {
+	struct _IMAGE_DOS_HEADER dos_header;
+	struct _IMAGE_NT_HEADERS64 nt_headers;
+	struct _IMAGE_EXPORT_DIRECTORY export_directory;
+
+	intro_read_virt(vcpu, address, &dos_header, sizeof(struct _IMAGE_DOS_HEADER));
+	intro_read_virt(vcpu, address + dos_header.e_lfanew, &nt_headers, sizeof(struct _IMAGE_NT_HEADERS64));
+	intro_read_virt(vcpu, address + nt_headers.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress,
+			&export_directory, sizeof(struct _IMAGE_EXPORT_DIRECTORY));
+
+	xa_init(&pe->exports);
+	for (u32 index = 0; index < export_directory.NumberOfNames; index++) {
+		struct pe_export* export = kzalloc(sizeof(struct pe_export), GFP_KERNEL);
+
+		u32 ordinal = intro_read_virt16(vcpu, address + export_directory.AddressOfNameOrdinals + (index * 0x2));
+		u32 func_addr = intro_read_virt32(vcpu, address + export_directory.AddressOfFunctions + (ordinal * sizeof(ULONG)));
+		u32 name_addr = intro_read_virt32(vcpu, address + export_directory.AddressOfNames + (index * sizeof(ULONG)));
+		intro_read_virt(vcpu, address + name_addr, export->name, sizeof(export->name));
+
+		export->address = address + func_addr;
+		export->address_rva = func_addr;
+
+		xa_insert(&pe->exports, pe->export_count++, export, GFP_KERNEL_ACCOUNT);
+	}
+
+	return true;
+}
+
+void intro_free_pe(struct pe_header* pe) {
+	unsigned long i;
+	struct pe_export* export;
+
+	intro_pe_for_each_export(i, export, pe) {
+		kfree(export);
+		xa_erase(&pe->exports, i);
+	}
+}
+
+struct pe_export* intro_find_export_pe(struct pe_header* pe, const char* name) {
+	unsigned long i;
+	struct pe_export* export;
+
+	intro_pe_for_each_export(i, export, pe) {
+		if (!strcmp(export->name, name))
+			return export;
+	}
+
+	return NULL;
+}
 
 /* https://github.com/ufrisk/MemProcFS/blob/fd9aa0219b29c5916b8f036ee3b1e0d1f486e14d/vmm/vmmwininit.c#L597 */
 gva_t intro_get_ntoskrnl_entrypoint(struct kvm_vcpu* vcpu) {
@@ -229,226 +306,32 @@ gva_t intro_get_ntoskrnl(struct kvm_vcpu* vcpu) {
 	return 0;
 }
 
-//static u64 g_psloadedmodulelist = 0;
+void dump_module_list(struct kvm_vcpu* vcpu, gva_t module_list) {
+	gva_t current_module = intro_read_virt64(vcpu, module_list);
+	if (!current_module)
+		return;
 
-/*char* utf16toutf8_(char* Destination, const u16* Source, u32 DestinationMaxLength)
-{
-	u32 i;
+	u32 max_incr = 0;
+	while ((current_module != module_list) && (max_incr++ < 4096)) {
+		struct _LDR_DATA_TABLE_ENTRY table_entry = {0};
+		intro_read_virt(vcpu, current_module, &table_entry, sizeof(struct _LDR_DATA_TABLE_ENTRY));
 
-	for (i = 0; (i < DestinationMaxLength - 1) && (Source[i] != 0); i++)
-	{
-		Destination[i] = (char)Source[i];
+		if (table_entry.DllBase && table_entry.SizeOfImage) {
+			char name[256] = { 0 };
+			intro_read_wstr(vcpu, &table_entry.BaseDllName, name, sizeof(name));
+
+			printk(KERN_ALERT "[%s] -> [ 0x%llx | 0x%x ]\n", name, table_entry.DllBase, table_entry.SizeOfImage);
+		}
+
+		current_module = intro_read_virt64(vcpu, current_module);
+		if (!current_module)
+			break;
 	}
-
-	Destination[i] = 0;
-
-	return Destination;
-}*/
-
-//static bool is_in_range_of_module(struct kvm_vcpu* vcpu, const char* name, u64 rip, u64 kbase, u64 psloadedmodulelist)
-//{
-//	if (!vcpu || !kbase || !psloadedmodulelist) {
-//		printk(KERN_ALERT "INVALID ARGS");
-//	}
-//	struct x86_exception e;
-//
-//	psloadedmodulelist += kbase;
-//
-////	printk(KERN_ALERT "psloadedmodulelist: 0x%llx\n", psloadedmodulelist);
-//
-//	u64 current_module = psloadedmodulelist;
-//	u64 count = 0;
-//
-//	kvm_read_guest(vcpu->kvm, kvm_mmu_gva_to_gpa_system(vcpu, current_module, &e), &current_module, sizeof(u64));
-//	if (!current_module) {
-//		printk(KERN_ALERT "CURRENT_MODULE INVALID");
-//	}
-//
-//	while ((current_module != psloadedmodulelist) && (count++ < 4096))
-//	{
-//		LDR_DATA_TABLE_ENTRY64 mod_info = {0};
-//		kvm_read_guest(vcpu->kvm, kvm_mmu_gva_to_gpa_system(vcpu, current_module, &e), &mod_info, sizeof(LDR_DATA_TABLE_ENTRY64));
-//
-//		if (mod_info.DllBase || mod_info.SizeOfImage) {
-//			char arr[256] = { 0 };
-//			u32 name_size = mod_info.DriverName.Length & 0xFFFF;
-//			u16* name_buffer = kzalloc(name_size + 2ull, GFP_KERNEL_ACCOUNT);
-//			kvm_read_guest(vcpu->kvm, kvm_mmu_gva_to_gpa_system(vcpu, mod_info.DriverName.Buffer, &e), name_buffer, name_size);
-//			utf16toutf8_(arr, name_buffer, sizeof(arr));
-//
-//			u64 start = mod_info.DllBase;
-//			u64 end = mod_info.DllBase + mod_info.SizeOfImage;
-//			if (strcmp(arr, name) == 0 && rip >= start && rip <= end)
-//				return true;
-//
-////			printk(KERN_ALERT "DRIVER[%s] -> [ 0x%llx | 0x%x ]\n", arr, mod_info.DllBase, mod_info.SizeOfImage);
-//		}
-//
-//		kvm_read_guest(vcpu->kvm, kvm_mmu_gva_to_gpa_system(vcpu, current_module, &e), &current_module, sizeof(u64));
-//		if (!current_module) {
-//			printk(KERN_ALERT "FAILED GETTING FLINK");
-//			break;
-//		}
-//	}
-//
-//	return false;
-//}
-//
-//static void dump_module_list_(struct kvm_vcpu* vcpu, u64 kbase, u64 psloadedmodulelist) {
-//	if (!vcpu || !kbase || !psloadedmodulelist) {
-//		printk(KERN_ALERT "INVALID ARGS");
-//	}
-//	struct x86_exception e;
-//
-//	psloadedmodulelist += kbase;
-//
-//	printk(KERN_ALERT "psloadedmodulelist: 0x%llx\n", psloadedmodulelist);
-//
-//	u64 current_module = psloadedmodulelist;
-//	u64 count = 0;
-//
-//	kvm_read_guest(vcpu->kvm, kvm_mmu_gva_to_gpa_system(vcpu, current_module, &e), &current_module, sizeof(u64));
-//	if (!current_module) {
-//		printk(KERN_ALERT "CURRENT_MODULE INVALID");
-//	}
-//
-//	while ((current_module != psloadedmodulelist) && (count++ < 4096))
-//	{
-//		LDR_DATA_TABLE_ENTRY64 mod_info = {0};
-//		kvm_read_guest(vcpu->kvm, kvm_mmu_gva_to_gpa_system(vcpu, current_module, &e), &mod_info, sizeof(LDR_DATA_TABLE_ENTRY64));
-//
-//		if (mod_info.DllBase || mod_info.SizeOfImage) {
-//			char arr[256] = { 0 };
-//			u32 name_size = mod_info.DriverName.Length & 0xFFFF;
-//			u16* name_buffer = kzalloc(name_size + 2ull, GFP_KERNEL_ACCOUNT);
-//			kvm_read_guest(vcpu->kvm, kvm_mmu_gva_to_gpa_system(vcpu, mod_info.DriverName.Buffer, &e), name_buffer, name_size);
-//			utf16toutf8_(arr, name_buffer, sizeof(arr));
-//
-//			printk(KERN_ALERT "DRIVER[%s] -> [ 0x%llx | 0x%x ]\n", arr, mod_info.DllBase, mod_info.SizeOfImage);
-//		}
-//
-//		kvm_read_guest(vcpu->kvm, kvm_mmu_gva_to_gpa_system(vcpu, current_module, &e), &current_module, sizeof(u64));
-//		if (!current_module) {
-//			printk(KERN_ALERT "FAILED GETTING FLINK");
-//			break;
-//		}
-//	}
-//}
-//
-//void disasm_be(struct kvm_vcpu *vcpu, u64 psloadedmodulelist) {
-//	static u64 kbase = 0;
-//	if (!kbase) {
-//		kbase = get_kernel_base_(vcpu, get_kernel_entry(vcpu));
-//	}
-//
-//	struct kvm_host_map map;
-//	u64 rip = kvm_rip_read(vcpu);
-//	bool in_range = is_in_range_of_module(vcpu, "BEDaisy.sys", rip, kbase, psloadedmodulelist);
-//	if (!in_range)
-//		return;
-//
-//	printk(KERN_ALERT "CPUID CALLED FROM BEDAISY\n");
-//
-//	gpa_t gpa = kvm_mmu_gva_to_gpa_read(vcpu, rip, NULL);
-//	if (kvm_vcpu_map(vcpu, gpa_to_gfn(gpa), &map)) {
-//		printk(KERN_ALERT "vcpu map fail...\n");
-//		return;
-//	}
-//
-//	if (!map.hva) {
-//		printk(KERN_ALERT "mapped page invalid hva...\n");
-//		return;
-//	}
-//
-//	u8* hva = map.hva + offset_in_page(gpa);
-//
-//	ZydisDecoder decoder;
-//	ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64);
-//	ZydisFormatter formatter;
-//	ZydisFormatterInit(&formatter, ZYDIS_FORMATTER_STYLE_INTEL);
-//	ZyanU64 runtime_address = rip;
-//	ZyanUSize offset = 0;
-//	const ZyanUSize length = 0x20;
-//	ZydisDecodedInstruction instruction;
-//	ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT_VISIBLE];
-//	while (ZYAN_SUCCESS(ZydisDecoderDecodeFull(&decoder, hva + offset, length - offset,
-//						   &instruction, operands, ZYDIS_MAX_OPERAND_COUNT_VISIBLE,
-//						   ZYDIS_DFLAG_VISIBLE_OPERANDS_ONLY)))
-//	{
-//		char buffer[256];
-//		ZydisFormatterFormatInstruction(&formatter, &instruction, operands,
-//						instruction.operand_count_visible, buffer, sizeof(buffer), runtime_address);
-//		printk(KERN_ALERT "0x%llx %s", runtime_address, buffer);
-//
-//		offset += instruction.length;
-//		runtime_address += instruction.length;
-//	}
-//
-//	kvm_vcpu_unmap(vcpu, &map, true);
-//}
-
-void introspection_rdtsc_callback(struct kvm_vcpu *vcpu)  {
-//	if (g_psloadedmodulelist)
-//		disasm_be(vcpu, g_psloadedmodulelist);
 }
 
-//void slide_with_the_heater(struct kvm_vcpu *vcpu) {
-//	u64 r9 = kvm_r9_read(vcpu);
-//
-//	if (r9 == 26000) {
-//		struct kvm_host_map map;
-//		u64 rip = kvm_rip_read(vcpu);
-//		rip -= 0x20;
-//		printk(KERN_ALERT "SLIDING DOWN MR. SUTERS BLOCK WITH THE HEATER [ RIP -> 0x%llx ]\n", rip);
-//
-//		gpa_t gpa = kvm_mmu_gva_to_gpa_read(vcpu, rip, NULL);
-//		if (kvm_vcpu_map(vcpu, gpa_to_gfn(gpa), &map)) {
-//			printk(KERN_ALERT "vcpu map fail...\n");
-//			return;
-//		}
-//
-//		if (!map.hva) {
-//			printk(KERN_ALERT "mapped page invalid hva...\n");
-//			return;
-//		}
-//
-//		u8* hva = map.hva + offset_in_page(gpa);
-//
-//		ZydisDecoder decoder;
-//		ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64);
-//		ZydisFormatter formatter;
-//		ZydisFormatterInit(&formatter, ZYDIS_FORMATTER_STYLE_INTEL);
-//		ZyanU64 runtime_address = rip;
-//		ZyanUSize offset = 0;
-//		const ZyanUSize length = 0x40;
-//		ZydisDecodedInstruction instruction;
-//		ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT_VISIBLE];
-//		while (ZYAN_SUCCESS(ZydisDecoderDecodeFull(&decoder, hva + offset, length - offset,
-//							   &instruction, operands, ZYDIS_MAX_OPERAND_COUNT_VISIBLE,
-//							   ZYDIS_DFLAG_VISIBLE_OPERANDS_ONLY)))
-//		{
-//			char buffer[256];
-//			ZydisFormatterFormatInstruction(&formatter, &instruction, operands,
-//							instruction.operand_count_visible, buffer, sizeof(buffer), runtime_address);
-//			printk(KERN_ALERT "0x%llx %s", runtime_address, buffer);
-//
-//			offset += instruction.length;
-//			runtime_address += instruction.length;
-//		}
-//
-//		kvm_vcpu_unmap(vcpu, &map, true);
-//
-//		kvm_r9_write(vcpu, 100);
-//	}
-//}
-
-void introspection_rdmsr_callback(struct kvm_vcpu *vcpu) {
-//	slide_with_the_heater(vcpu);
-}
-
-void introspection_xsetbv_callback(struct kvm_vcpu *vcpu) {
-//	slide_with_the_heater(vcpu);
-}
+void introspection_rdtsc_callback(struct kvm_vcpu *vcpu)  {}
+void introspection_rdmsr_callback(struct kvm_vcpu *vcpu) {}
+void introspection_xsetbv_callback(struct kvm_vcpu *vcpu) {}
 
 void introspection_cpuid_callback(struct kvm_vcpu *vcpu) {
 	struct kvm_host_map map;
@@ -456,7 +339,7 @@ void introspection_cpuid_callback(struct kvm_vcpu *vcpu) {
 	u64 rip = kvm_rip_read(vcpu);
 
 	switch (eax) {
-		case INTROSPECTION_CPUID_INIT ... INTROSPECTION_CPUID_DUMP_MODULES: {
+		case INTROSPECTION_CPUID_INIT: {
 			void cb(ZydisDecodedInstruction* instr, const char* text, u64 rip) {
 				printk(KERN_ALERT "0x%llx %s\n", rip, text);
 			}
@@ -468,69 +351,35 @@ void introspection_cpuid_callback(struct kvm_vcpu *vcpu) {
 			}
 
 			printk(KERN_ALERT "0x%lx\n", intro_get_ntoskrnl(vcpu));
+			break;
+		}
+		case INTROSPECTION_CPUID_DUMP_MODULES: {
+			struct pe_header ntoskrnl_pe;
+			gva_t ntoskrnl_va = intro_get_ntoskrnl(vcpu);
+			if (intro_init_pe(vcpu, ntoskrnl_va, &ntoskrnl_pe)) {
+				unsigned long i;
+				struct pe_export* export;
+
+				intro_pe_for_each_export_ref(i, export, ntoskrnl_pe) {
+					printk(KERN_ALERT "%s, 0x%lx\n", export->name, export->address);
+				}
+
+				struct pe_export* module_list_export =
+					intro_find_export_pe(&ntoskrnl_pe, "PsLoadedModuleList");
+				if (module_list_export) {
+					printk(KERN_ALERT "%s, 0x%lx\n", module_list_export->name, module_list_export->address);
+				}
+
+				dump_module_list(vcpu, module_list_export->address);
+
+				intro_free_pe(&ntoskrnl_pe);
+			}
+
+			break;
 		}
 	}
 
-	//	u32 ebx = kvm_rbx_read(vcpu);
-	//	u32 ecx = kvm_rcx_read(vcpu);
-	//	u32 edx = kvm_rdx_read(vcpu);
-
-//	slide_with_the_heater(vcpu);
-//
-//	switch (eax) {
-//	case INTROSPECTION_CPUID_INIT: {
-//		struct kvm_host_map map;
-//		u64 rip = kvm_rip_read(vcpu);
-//		gpa_t gpa = kvm_mmu_gva_to_gpa_read(vcpu, rip, NULL);
-//		if (kvm_vcpu_map(vcpu, gpa_to_gfn(gpa), &map)) {
-//			printk(KERN_ALERT "vcpu map fail...\n");
-//			return;
-//		}
-//
-//		if (!map.hva) {
-//			printk(KERN_ALERT "mapped page invalid hva...\n");
-//			return;
-//		}
-//
-//		u8* hva = map.hva + offset_in_page(gpa);
-//
-//		ZydisDecoder decoder;
-//		ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64);
-//		ZydisFormatter formatter;
-//		ZydisFormatterInit(&formatter, ZYDIS_FORMATTER_STYLE_INTEL);
-//		ZyanU64 runtime_address = rip;
-//		ZyanUSize offset = 0;
-//		const ZyanUSize length = 0x20;
-//		ZydisDecodedInstruction instruction;
-//		ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT_VISIBLE];
-//		while (ZYAN_SUCCESS(ZydisDecoderDecodeFull(&decoder, hva + offset, length - offset,
-//							   &instruction, operands, ZYDIS_MAX_OPERAND_COUNT_VISIBLE,
-//							   ZYDIS_DFLAG_VISIBLE_OPERANDS_ONLY)))
-//		{
-//			char buffer[256];
-//			ZydisFormatterFormatInstruction(&formatter, &instruction, operands,
-//							instruction.operand_count_visible, buffer, sizeof(buffer), runtime_address);
-//			printk(KERN_ALERT "0x%llx %s", runtime_address, buffer);
-//
-//			offset += instruction.length;
-//			runtime_address += instruction.length;
-//		}
-//
-//		kvm_vcpu_unmap(vcpu, &map, true);
-//
-//		break;
-//	}
-//
-//	case INTROSPECTION_CPUID_DUMP_MODULES: {
-//		u64 kbase = get_kernel_base_(vcpu, get_kernel_entry(vcpu));
-//		u64 packed = ((u64)ecx) << 32 | edx;
-//		printk(KERN_ALERT "[kbase] 0x%llx\n", kbase);
-//		printk(KERN_ALERT "[psloadedmodulelist] 0x%llx\n", packed);
-//		g_psloadedmodulelist = packed;
-//		dump_module_list_(vcpu, kbase, packed);
-//		break;
-//	}
-//	}
+	// u64 packed = ((u64)ecx) << 32 | edx;
 }
 
 void battleye_anti_vm(struct kvm_vcpu* vcpu) {
@@ -546,13 +395,13 @@ void battleye_anti_vm(struct kvm_vcpu* vcpu) {
 	if (!rip_hva)
 		return;
 
-	u8 vm_cmp[7] = {
+	u8 vm_check_cmp[7] = {
 		// cmp r9d, 0x6590
 		0x41, 0x81, 0xF9, 0x90, 0x65, 0x00, 0x00
 	};
 
 	for (u64 offset = 0; offset < 0x20; offset++) {
-		if (!memcmp((void*)(rip_hva + offset), vm_cmp, sizeof(vm_cmp))) {
+		if (!memcmp((void*)(rip_hva + offset), vm_check_cmp, sizeof(vm_check_cmp))) {
 			kvm_r9_write(vcpu, 0x6590);
 			kvm_vcpu_unmap(vcpu, &map, true);
 			return;
