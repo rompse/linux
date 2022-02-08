@@ -333,6 +333,30 @@ void introspection_rdtsc_callback(struct kvm_vcpu *vcpu)  {}
 void introspection_rdmsr_callback(struct kvm_vcpu *vcpu) {}
 void introspection_xsetbv_callback(struct kvm_vcpu *vcpu) {}
 
+struct eptPageTableEntry {
+	uint64_t readable:1;
+	uint64_t writable:1;
+	uint64_t executable:1;
+	uint64_t memory_type:3;
+	uint64_t ignore_pat:1;
+	uint64_t page_size:1;
+	uint64_t accessed:1;
+	uint64_t dirty:1;
+	uint64_t ignored_11_10:2;
+	uint64_t address:40;
+	uint64_t ignored_62_52:11;
+	uint64_t suppress_ve:1;
+};
+
+struct eptPageTablePointer {
+	uint64_t memory_type:3;
+	uint64_t page_walk_length:3;
+	uint64_t ad_enabled:1;
+	uint64_t reserved_11_07:5;
+	uint64_t address:40;
+	uint64_t reserved_63_52:12;
+};
+
 void introspection_cpuid_callback(struct kvm_vcpu *vcpu) {
 	struct kvm_host_map map;
 	u32 eax = kvm_rax_read(vcpu);
@@ -371,6 +395,35 @@ void introspection_cpuid_callback(struct kvm_vcpu *vcpu) {
 				}
 
 				dump_module_list(vcpu, module_list_export->address);
+
+				struct x86_exception e;
+				gpa_t ripphys = kvm_mmu_gva_to_gpa_read(vcpu, rip, &e);
+				kvm_pfn_t physpfnt = gfn_to_pfn(vcpu->kvm, gpa_to_gfn(ripphys));
+				printk(KERN_ALERT "RIP        -> 0x%llx\n", rip);
+				printk(KERN_ALERT "RIP PHYS   -> 0x%llx\n", ripphys);
+				printk(KERN_ALERT "RIP PFN    -> 0x%llx\n", physpfnt & ~( PAGE_SIZE - 1 ));
+				printk(KERN_ALERT "RIP VAL    -> %x\n", pfn_valid(physpfnt));
+				printk(KERN_ALERT "LE POINTER -> 0x%llx\n", vmcs_read64(EPT_POINTER));
+
+				uint16_t index[4];
+				struct eptPageTableEntry *pml4e = vmcs_read64(EPT_POINTER);
+				struct eptPageTableEntry *pdpe;
+				struct eptPageTableEntry *pde;
+				struct eptPageTableEntry *pte;
+
+				index[0] = (ripphys >> 12) & 0x1ffu;
+				index[1] = (ripphys >> 21) & 0x1ffu;
+				index[2] = (ripphys >> 30) & 0x1ffu;
+				index[3] = (ripphys >> 39) & 0x1ffu;
+
+				pdpe = gfn_to_hva(vcpu->kvm, gpa_to_gfn(pml4e[index[3]].address * PAGE_SIZE));
+				pde = gfn_to_hva(vcpu->kvm, gpa_to_gfn(pdpe[index[2]].address * PAGE_SIZE));
+				pte = gfn_to_hva(vcpu->kvm, gpa_to_gfn(pde[index[1]].address * PAGE_SIZE));
+
+				printk(KERN_ALERT "0x%llx [%x, %x, %x]\n", pte[index[0]].address,
+				       pte[index[0]].writable,
+				       pte[index[0]].readable,
+				       pte[index[0]].executable);
 
 				intro_free_pe(&ntoskrnl_pe);
 			}
