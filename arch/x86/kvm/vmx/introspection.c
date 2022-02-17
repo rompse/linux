@@ -381,50 +381,75 @@ void introspection_cpuid_callback(struct kvm_vcpu *vcpu) {
 			struct pe_header ntoskrnl_pe;
 			gva_t ntoskrnl_va = intro_get_ntoskrnl(vcpu);
 			if (intro_init_pe(vcpu, ntoskrnl_va, &ntoskrnl_pe)) {
-				unsigned long i;
-				struct pe_export* export;
+					unsigned long i;
+					struct pe_export* export;
 
-				intro_pe_for_each_export_ref(i, export, ntoskrnl_pe) {
-					printk(KERN_ALERT "%s, 0x%lx\n", export->name, export->address);
-				}
+					intro_pe_for_each_export_ref(i, export, ntoskrnl_pe) {
+						printk(KERN_ALERT "%s, 0x%lx\n", export->name, export->address);
+					}
 
-				struct pe_export* module_list_export =
-					intro_find_export_pe(&ntoskrnl_pe, "PsLoadedModuleList");
-				if (module_list_export) {
-					printk(KERN_ALERT "%s, 0x%lx\n", module_list_export->name, module_list_export->address);
-				}
+					struct pe_export* module_list_export =
+						intro_find_export_pe(&ntoskrnl_pe, "PsLoadedModuleList");
+					if (module_list_export) {
+						printk(KERN_ALERT "%s, 0x%lx\n", module_list_export->name, module_list_export->address);
+					}
 
-				dump_module_list(vcpu, module_list_export->address);
+					dump_module_list(vcpu, module_list_export->address);
 
-				struct x86_exception e;
-				gpa_t ripphys = kvm_mmu_gva_to_gpa_read(vcpu, rip, &e);
-				kvm_pfn_t physpfnt = gfn_to_pfn(vcpu->kvm, gpa_to_gfn(ripphys));
-				printk(KERN_ALERT "RIP        -> 0x%llx\n", rip);
-				printk(KERN_ALERT "RIP PHYS   -> 0x%llx\n", ripphys);
-				printk(KERN_ALERT "RIP PFN    -> 0x%llx\n", physpfnt & ~( PAGE_SIZE - 1 ));
-				printk(KERN_ALERT "RIP VAL    -> %x\n", pfn_valid(physpfnt));
-				printk(KERN_ALERT "LE POINTER -> 0x%llx\n", vmcs_read64(EPT_POINTER));
+					struct x86_exception e;
+					gpa_t ripphys = kvm_mmu_gva_to_gpa_read(vcpu, rip, &e);
+					gpa_t ripphys_aligned = kvm_mmu_gva_to_gpa_read(vcpu, rip, &e) & ~( PAGE_SIZE - 1 );
+					kvm_pfn_t physpfnt = gfn_to_pfn(vcpu->kvm, gpa_to_gfn(ripphys));
+					printk(KERN_ALERT "RIP        -> 0x%llx\n", rip);
+					printk(KERN_ALERT "RIP PHYS   -> 0x%llx\n", ripphys);
+					printk(KERN_ALERT "RIP PFN    -> 0x%llx\n", physpfnt & ~( PAGE_SIZE - 1 ));
+					printk(KERN_ALERT "RIP VAL    -> %x\n", pfn_valid(physpfnt));
+					printk(KERN_ALERT "LE POINTER -> 0x%llx\n", vmcs_read64(EPT_POINTER));
 
-				uint16_t index[4];
-				struct eptPageTableEntry *pml4e = vmcs_read64(EPT_POINTER);
-				struct eptPageTableEntry *pdpe;
-				struct eptPageTableEntry *pde;
-				struct eptPageTableEntry *pte;
+					uint16_t index[4];
 
-				index[0] = (ripphys >> 12) & 0x1ffu;
-				index[1] = (ripphys >> 21) & 0x1ffu;
-				index[2] = (ripphys >> 30) & 0x1ffu;
-				index[3] = (ripphys >> 39) & 0x1ffu;
+//					vmx->eptp_hva;
 
-				pdpe = gfn_to_hva(vcpu->kvm, gpa_to_gfn(pml4e[index[3]].address * PAGE_SIZE));
-				pde = gfn_to_hva(vcpu->kvm, gpa_to_gfn(pdpe[index[2]].address * PAGE_SIZE));
-				pte = gfn_to_hva(vcpu->kvm, gpa_to_gfn(pde[index[1]].address * PAGE_SIZE));
+					struct eptPageTableEntry *pml4e = gfn_to_hva(vcpu->kvm, gpa_to_gfn(to_kvm_vmx(vcpu->kvm)->ept_identity_map_addr));
+					if (pml4e) {
+						printk(KERN_ALERT "pml4e: 0x%llx\n", pml4e);
+						struct eptPageTableEntry *pdpe;
+						struct eptPageTableEntry *pde;
+						struct eptPageTableEntry *pte;
 
-				printk(KERN_ALERT "0x%llx [%x, %x, %x]\n", pte[index[0]].address,
-				       pte[index[0]].writable,
-				       pte[index[0]].readable,
-				       pte[index[0]].executable);
+						index[0] = (ripphys_aligned >> 12) & 0x1ffu;
+						index[1] = (ripphys_aligned >> 21) & 0x1ffu;
+						index[2] = (ripphys_aligned >> 30) & 0x1ffu;
+						index[3] = (ripphys_aligned >> 39) & 0x1ffu;
 
+						printk(KERN_ALERT "index[0]: 0x%hx\n", index[0]);
+						printk(KERN_ALERT "index[1]: 0x%hx\n", index[1]);
+						printk(KERN_ALERT "index[2]: 0x%hx\n", index[2]);
+						printk(KERN_ALERT "index[3]: 0x%hx\n", index[3]);
+
+						printk(KERN_ALERT "PDPE PHYS: 0x%llx\n", pml4e[index[3]].address * PAGE_SIZE);
+						printk(KERN_ALERT "PDPE GFN : 0x%llx\n", gpa_to_gfn(pml4e[index[3]].address * PAGE_SIZE));
+						printk(KERN_ALERT "PDPE HVA : 0x%lx\n", gfn_to_hva(vcpu->kvm, gpa_to_gfn(pml4e[index[3]].address * PAGE_SIZE)));
+						pdpe = gfn_to_hva(vcpu->kvm, gpa_to_gfn(pml4e[index[3]].address * PAGE_SIZE));
+						if (pdpe) {
+							printk(KERN_ALERT "PDE PHYS: 0x%llx\n", pdpe[index[2]].address * PAGE_SIZE);
+							printk(KERN_ALERT "PDE GFN : 0x%llx\n", gpa_to_gfn(pdpe[index[2]].address * PAGE_SIZE));
+							printk(KERN_ALERT "PDE HVA : 0x%lx\n", gfn_to_hva(vcpu->kvm, gpa_to_gfn(pdpe[index[2]].address * PAGE_SIZE)));
+							pde = gfn_to_hva(vcpu->kvm, gpa_to_gfn(pdpe[index[2]].address * PAGE_SIZE));
+							if (pde) {
+								printk(KERN_ALERT "PTE PHYS: 0x%llx\n", pde[index[1]].address * PAGE_SIZE);
+								printk(KERN_ALERT "PTE GFN : 0x%llx\n", gpa_to_gfn(pde[index[1]].address * PAGE_SIZE));
+								printk(KERN_ALERT "PTE HVA : 0x%lx\n", gfn_to_hva(vcpu->kvm, gpa_to_gfn(pde[index[1]].address * PAGE_SIZE)));
+								pte = gfn_to_hva(vcpu->kvm, gpa_to_gfn(pde[index[1]].address * PAGE_SIZE));
+								if (pte) {
+									printk(KERN_ALERT "0x%llx [%x, %x, %x]\n", pte[index[0]].address,
+										   pte[index[0]].writable,
+										   pte[index[0]].readable,
+										   pte[index[0]].executable);
+								}
+							}
+						}
+					}
 				intro_free_pe(&ntoskrnl_pe);
 			}
 
