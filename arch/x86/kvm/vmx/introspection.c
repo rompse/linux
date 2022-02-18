@@ -384,6 +384,7 @@ void introspection_cpuid_callback(struct kvm_vcpu *vcpu) {
 void battleye_anti_vm(struct kvm_vcpu* vcpu) {
 	u64 r9 = kvm_r9_read(vcpu);
 	if (r9 == 0x6590) {
+		printk(KERN_ALERT "[ANTI_ANTI_VM] BATTLEYE [R9 == 0x6590]\n");
 		kvm_r9_write(vcpu, 10);
 		return;
 	}
@@ -401,6 +402,7 @@ void battleye_anti_vm(struct kvm_vcpu* vcpu) {
 
 	for (u64 offset = 0; offset < 0x20; offset++) {
 		if (!memcmp((void*)(rip_hva + offset), vm_check_cmp, sizeof(vm_check_cmp))) {
+			printk(KERN_ALERT "[ANTI_ANTI_VM] BATTLEYE [MEMCMP]\n");
 			kvm_r9_write(vcpu, 0x6590);
 			kvm_vcpu_unmap(vcpu, &map, true);
 			return;
