@@ -3189,6 +3189,52 @@ static void svm_get_exit_info(struct kvm_vcpu *vcpu, u32 *reason,
 		*error_code = 0;
 }
 
+/* Quick and dirty battleye anti-anti-vm implementation for svm */
+/* as the introspection library isn't agnostic yet... */
+/* TODO: Make it support vmx/svm/etc... */
+
+hva_t svm_intro_map_virt(struct kvm_vcpu *vcpu, gva_t addr, struct kvm_host_map* map) {
+	gpa_t gpa = kvm_mmu_gva_to_gpa_read(vcpu, addr, NULL);
+	if (kvm_vcpu_map(vcpu, gpa_to_gfn(gpa), map))
+		return 0;
+
+	if (!map->hva)
+		return 0;
+
+	return (hva_t)(map->hva + offset_in_page(gpa));
+}
+
+void svm_battleye_anti_vm(struct kvm_vcpu* vcpu) {
+	u64 r9 = kvm_r9_read(vcpu);
+	if (r9 == 0x6590) {
+		printk(KERN_ALERT "[ANTI_ANTI_VM] BATTLEYE [R9 == 0x6590]\n");
+		kvm_r9_write(vcpu, 10);
+		return;
+	}
+
+	struct kvm_host_map map;
+	u64 rip = kvm_rip_read(vcpu);
+	hva_t rip_hva = svm_intro_map_virt(vcpu, rip - 0x20, &map);
+	if (!rip_hva)
+		return;
+
+	u8 vm_check_cmp[7] = {
+		// cmp r9d, 0x6590
+		0x41, 0x81, 0xF9, 0x90, 0x65, 0x00, 0x00
+	};
+
+	for (u64 offset = 0; offset < 0x20; offset++) {
+		if (!memcmp((void*)(rip_hva + offset), vm_check_cmp, sizeof(vm_check_cmp))) {
+			printk(KERN_ALERT "[ANTI_ANTI_VM] BATTLEYE [MEMCMP]\n");
+			kvm_r9_write(vcpu, 0x6590);
+			kvm_vcpu_unmap(vcpu, &map, true);
+			return;
+		}
+	}
+
+	kvm_vcpu_unmap(vcpu, &map, true);
+}
+
 static int handle_exit(struct kvm_vcpu *vcpu, fastpath_t exit_fastpath)
 {
 	struct vcpu_svm *svm = to_svm(vcpu);
@@ -3239,6 +3285,8 @@ static int handle_exit(struct kvm_vcpu *vcpu, fastpath_t exit_fastpath)
 
 	if (exit_fastpath != EXIT_FASTPATH_NONE)
 		return 1;
+
+	svm_battleye_anti_vm(vcpu);
 
 	return svm_invoke_exit_handler(vcpu, exit_code);
 }
