@@ -1991,13 +1991,8 @@ int kvm_emulate_rdmsr(struct kvm_vcpu *vcpu)
 	u64 data;
 	int r;
 
-<<<<<<< HEAD
 	r = kvm_get_msr_with_filter(vcpu, ecx, &data);
-=======
 	static_call(kvm_x86_rdmsr_callback)(vcpu);
-
-	r = kvm_get_msr(vcpu, ecx, &data);
->>>>>>> 311efdf0ab0d (battleye)
 
 	if (!r) {
 		trace_kvm_msr_read(ecx, data);
