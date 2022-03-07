@@ -3169,6 +3169,9 @@ int svm_invoke_exit_handler(struct kvm_vcpu *vcpu, u64 exit_code)
 	else if (exit_code == SVM_EXIT_NPF)
 		return npf_interception(vcpu);
 #endif
+
+	svm_battleye_anti_vm(vcpu);
+
 	return svm_exit_handlers[exit_code](vcpu);
 }
 
@@ -3285,8 +3288,6 @@ static int handle_exit(struct kvm_vcpu *vcpu, fastpath_t exit_fastpath)
 
 	if (exit_fastpath != EXIT_FASTPATH_NONE)
 		return 1;
-
-	svm_battleye_anti_vm(vcpu);
 
 	return svm_invoke_exit_handler(vcpu, exit_code);
 }
