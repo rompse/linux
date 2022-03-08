@@ -3152,46 +3152,6 @@ static int svm_handle_invalid_exit(struct kvm_vcpu *vcpu, u64 exit_code)
 	return 0;
 }
 
-int svm_invoke_exit_handler(struct kvm_vcpu *vcpu, u64 exit_code)
-{
-	if (!svm_check_exit_valid(vcpu, exit_code))
-		return svm_handle_invalid_exit(vcpu, exit_code);
-
-#ifdef CONFIG_RETPOLINE
-	if (exit_code == SVM_EXIT_MSR)
-		return msr_interception(vcpu);
-	else if (exit_code == SVM_EXIT_VINTR)
-		return interrupt_window_interception(vcpu);
-	else if (exit_code == SVM_EXIT_INTR)
-		return intr_interception(vcpu);
-	else if (exit_code == SVM_EXIT_HLT)
-		return kvm_emulate_halt(vcpu);
-	else if (exit_code == SVM_EXIT_NPF)
-		return npf_interception(vcpu);
-#endif
-
-	svm_battleye_anti_vm(vcpu);
-
-	return svm_exit_handlers[exit_code](vcpu);
-}
-
-static void svm_get_exit_info(struct kvm_vcpu *vcpu, u32 *reason,
-			      u64 *info1, u64 *info2,
-			      u32 *intr_info, u32 *error_code)
-{
-	struct vmcb_control_area *control = &to_svm(vcpu)->vmcb->control;
-
-	*reason = control->exit_code;
-	*info1 = control->exit_info_1;
-	*info2 = control->exit_info_2;
-	*intr_info = control->exit_int_info;
-	if ((*intr_info & SVM_EXITINTINFO_VALID) &&
-	    (*intr_info & SVM_EXITINTINFO_VALID_ERR))
-		*error_code = control->exit_int_info_err;
-	else
-		*error_code = 0;
-}
-
 /* Quick and dirty battleye anti-anti-vm implementation for svm */
 /* as the introspection library isn't agnostic yet... */
 /* TODO: Make it support vmx/svm/etc... */
@@ -3236,6 +3196,46 @@ void svm_battleye_anti_vm(struct kvm_vcpu* vcpu) {
 	}
 
 	kvm_vcpu_unmap(vcpu, &map, true);
+}
+
+int svm_invoke_exit_handler(struct kvm_vcpu *vcpu, u64 exit_code)
+{
+	if (!svm_check_exit_valid(vcpu, exit_code))
+		return svm_handle_invalid_exit(vcpu, exit_code);
+
+#ifdef CONFIG_RETPOLINE
+	if (exit_code == SVM_EXIT_MSR)
+		return msr_interception(vcpu);
+	else if (exit_code == SVM_EXIT_VINTR)
+		return interrupt_window_interception(vcpu);
+	else if (exit_code == SVM_EXIT_INTR)
+		return intr_interception(vcpu);
+	else if (exit_code == SVM_EXIT_HLT)
+		return kvm_emulate_halt(vcpu);
+	else if (exit_code == SVM_EXIT_NPF)
+		return npf_interception(vcpu);
+#endif
+
+	svm_battleye_anti_vm(vcpu);
+
+	return svm_exit_handlers[exit_code](vcpu);
+}
+
+static void svm_get_exit_info(struct kvm_vcpu *vcpu, u32 *reason,
+			      u64 *info1, u64 *info2,
+			      u32 *intr_info, u32 *error_code)
+{
+	struct vmcb_control_area *control = &to_svm(vcpu)->vmcb->control;
+
+	*reason = control->exit_code;
+	*info1 = control->exit_info_1;
+	*info2 = control->exit_info_2;
+	*intr_info = control->exit_int_info;
+	if ((*intr_info & SVM_EXITINTINFO_VALID) &&
+	    (*intr_info & SVM_EXITINTINFO_VALID_ERR))
+		*error_code = control->exit_int_info_err;
+	else
+		*error_code = 0;
 }
 
 static int handle_exit(struct kvm_vcpu *vcpu, fastpath_t exit_fastpath)
