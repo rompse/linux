@@ -3246,29 +3246,6 @@ static int svm_handle_invalid_exit(struct kvm_vcpu *vcpu, u64 exit_code)
 	return 0;
 }
 
-int svm_invoke_exit_handler(struct kvm_vcpu *vcpu, u64 exit_code)
-{
-	if (!svm_check_exit_valid(exit_code))
-		return svm_handle_invalid_exit(vcpu, exit_code);
-
-#ifdef CONFIG_RETPOLINE
-	if (exit_code == SVM_EXIT_MSR)
-		return msr_interception(vcpu);
-	else if (exit_code == SVM_EXIT_VINTR)
-		return interrupt_window_interception(vcpu);
-	else if (exit_code == SVM_EXIT_INTR)
-		return intr_interception(vcpu);
-	else if (exit_code == SVM_EXIT_HLT)
-		return kvm_emulate_halt(vcpu);
-	else if (exit_code == SVM_EXIT_NPF)
-		return npf_interception(vcpu);
-#endif
-
-	svm_battleye_anti_vm(vcpu);
-
-	return svm_exit_handlers[exit_code](vcpu);
-}
-
 /* Quick and dirty battleye anti-anti-vm implementation for svm */
 /* as the introspection library isn't agnostic yet... */
 /* TODO: Make it support vmx/svm/etc... */
